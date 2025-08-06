@@ -1,22 +1,19 @@
 import os
-import tempfile
-import datetime
-import re
-
 import streamlit as st
 from dotenv import load_dotenv
-
 from langgraph_review import process_transcript_enhanced
 
-# Load environment variables
+# Load environment variables from .env file (for local development)
 load_dotenv()
 
-# Ensure OpenAI API key is set
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    st.error("OPENAI_API_KEY is not set. Please add it to your .env file.")
-else:
-    os.environ["OPENAI_API_KEY"] = api_key
+# Get API key from Streamlit secrets or environment variable
+openai_key = st.secrets.get("openai", {}).get("api_key") or os.getenv("OPENAI_API_KEY")
+if not openai_key:
+    st.error("OpenAI API key not found. Please set it in Streamlit secrets or .env file.")
+    st.stop()
+
+# Set the API key for OpenAI
+os.environ["OPENAI_API_KEY"] = openai_key
 
 # Streamlit page configuration
 st.set_page_config(
