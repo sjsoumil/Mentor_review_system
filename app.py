@@ -1,19 +1,31 @@
 import os
+import tempfile
+import datetime
+import re
+
 import streamlit as st
-from dotenv import load_dotenv
 from langgraph_review import process_transcript_enhanced
 
-# Load environment variables from .env file (for local development)
-load_dotenv()
-
-# Get API key from Streamlit secrets or environment variable
-openai_key = st.secrets.get("openai", {}).get("api_key") or os.getenv("OPENAI_API_KEY")
-if not openai_key:
-    st.error("OpenAI API key not found. Please set it in Streamlit secrets or .env file.")
+# Load environment variables from Streamlit secrets
+try:
+    # Set OpenAI API key from Streamlit secrets
+    if 'openai' in st.secrets and 'api_key' in st.secrets.openai:
+        os.environ["OPENAI_API_KEY"] = st.secrets.openai.api_key
+    # Set Google Cloud credentials from Streamlit secrets
+    if 'gcp_service_account' in st.secrets:
+        # Convert the service account dict to JSON string for gspread
+        import json
+        service_account_info = dict(st.secrets.gcp_service_account)
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS_JSON"] = json.dumps(service_account_info)
+    
+    # Verify OpenAI API key is set
+    if not os.getenv("OPENAI_API_KEY"):
+        st.error("OpenAI API key not found in Streamlit secrets. Please configure it in the Streamlit Cloud settings.")
+        st.stop()
+        
+except Exception as e:
+    st.error(f"Error loading configuration: {str(e)}")
     st.stop()
-
-# Set the API key for OpenAI
-os.environ["OPENAI_API_KEY"] = openai_key
 
 # Streamlit page configuration
 st.set_page_config(
