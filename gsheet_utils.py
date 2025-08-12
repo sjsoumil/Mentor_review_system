@@ -1,20 +1,45 @@
 import gspread
+import json
+import os
 from google.oauth2.service_account import Credentials
-from typing import List
+from typing import List, Dict, Any, Optional
 
 # If you want to use a specific sheet, set this here or pass as arg
 SPREADSHEET_ID = "1hIH41rTkaiuIWND0mbXgCtMBQBfL27KRuGaCif5dxYg"
 SHEET_HEADER = ["Date", "Time", "Filename", "Mentor Name", "Overall Score", "Email Output"]
 
-
-def get_gsheet_client(creds_path: str = "GS_creds.json"):
+def get_gsheet_client(creds_path: Optional[str] = None):
     scopes = [
         'https://www.googleapis.com/auth/spreadsheets',
         'https://www.googleapis.com/auth/drive',
     ]
-    creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
-    gc = gspread.authorize(creds)
-    return gc
+    
+    # First try to get credentials from environment variable
+    if 'GOOGLE_APPLICATION_CREDENTIALS_JSON' in os.environ:
+        try:
+            service_account_info = json.loads(os.environ['GOOGLE_APPLICATION_CREDENTIALS_JSON'])
+            creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+            return gspread.authorize(creds)
+        except Exception as e:
+            print(f"Error using environment credentials: {e}")
+    
+    # Fall back to credentials file if specified
+    if creds_path and os.path.exists(creds_path):
+        try:
+            creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
+            return gspread.authorize(creds)
+        except Exception as e:
+            print(f"Error using credentials file: {e}")
+    
+    # Try to use default application credentials (for local development)
+    try:
+        from google.auth import default
+        creds, _ = default(scopes=scopes)
+        return gspread.authorize(creds)
+    except Exception as e:
+        print(f"Error using default credentials: {e}")
+    
+    raise Exception("Could not initialize Google Sheets client. No valid credentials found.")
 
 
 def get_or_create_sheet_by_id(gc, spreadsheet_id: str = SPREADSHEET_ID):
@@ -29,8 +54,14 @@ def get_or_create_sheet_by_id(gc, spreadsheet_id: str = SPREADSHEET_ID):
 
 def append_feedback_row(
     date_str: str, time_str: str, filename: str, mentor_name: str, overall_score: str, email_output: str,
-    creds_path: str = "GS_creds.json", spreadsheet_id: str = SPREADSHEET_ID
+    creds_path: Optional[str] = None, spreadsheet_id: str = SPREADSHEET_ID
 ):
-    gc = get_gsheet_client(creds_path)
-    worksheet = get_or_create_sheet_by_id(gc, spreadsheet_id)
-    worksheet.append_row([date_str, time_str, filename, mentor_name, overall_score, email_output])
+    try:
+        gc = get_gsheet_client(creds_path)
+        worksheet = get_or_create_sheet_by_id(gc, spreadsheet_id)
+        worksheet.append_row([date_str, time_str, filename, mentor_name, overall_score, email_output])
+        return True, "Successfully saved to Google Sheet"
+    except Exception as e:
+        error_msg = f"Could not save to Google Sheet: {str(e)}"
+        print(error_msg)
+        return False, error_msg
