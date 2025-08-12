@@ -9,12 +9,41 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import AnyMessage, add_messages
 import statistics
-from dotenv import load_dotenv
+import streamlit as st
+
 # --- Ensure API Key is present ---
-load_dotenv()
 openai_key = os.getenv("OPENAI_API_KEY")
 if not openai_key:
-    raise EnvironmentError("OPENAI_API_KEY environment variable not set. Please run: export OPENAI_API_KEY=sk-xxxx")
+    # Try to get from Streamlit secrets if not in environment
+    try:
+        if 'openai' in st.secrets and 'api_key' in st.secrets.openai:
+            openai_key = st.secrets.openai.api_key
+            os.environ["OPENAI_API_KEY"] = openai_key
+    except:
+        pass
+
+if not openai_key:
+    raise EnvironmentError("OpenAI API key not found. Please set it in Streamlit secrets or as an environment variable.")
+
+# Configure Google Cloud credentials if available
+if 'GOOGLE_APPLICATION_CREDENTIALS_JSON' in os.environ:
+    import tempfile
+    from google.oauth2 import service_account
+    
+    try:
+        # Parse the service account info from environment variable
+        service_account_info = json.loads(os.environ['GOOGLE_APPLICATION_CREDENTIALS_JSON'])
+        
+        # Create a temporary file with the service account info
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp:
+            json.dump(service_account_info, temp)
+            temp_path = temp.name
+        
+        # Set the environment variable that gspread will use
+        os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = temp_path
+        
+    except Exception as e:
+        print(f"Warning: Failed to set up Google Cloud credentials: {e}")
 
 def review_filename(transcript_path):
     """Generate output filename for review"""
