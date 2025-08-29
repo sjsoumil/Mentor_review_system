@@ -686,14 +686,14 @@ def generate_enhanced_email_node(state) -> dict:
     
     # Format strengths to focus on mentor's performance
     refined_strengths = [
-        "Demonstrated strong technical knowledge in the subject matter.",
-        "Maintained a professional and supportive demeanor throughout the session.",
-        "Provided clear and actionable technical guidance."
+        "Demonstrated solid understanding of the topic.",
+        "Maintained a helpful and professional attitude",
+        "Gave clear, practical technical advice"
     ]
     #   # Refine strengths using LLM
     # strengths_prompt = f"""Refine these mentor strengths to be more specific and impactful:
     
-    # {strengths_text}
+    # {strengths_text} 
     
     # Make them more specific to the session and focus on the mentor's actions and their positive impact.
     # Keep each point concise (1-2 sentences).
@@ -719,7 +719,7 @@ def generate_enhanced_email_node(state) -> dict:
     
     # Refine improvements using LLM
     if improvement_text:
-        improvement_prompt = f"""Refine these areas for improvement to be more constructive and actionable but make sure you do not provide any generic feedback:
+        improvement_prompt = f"""Refine these areas for improvement to be more constructive and actionable  and all summarised in 4-5 points with each point no more than 30 words only but make sure you do not provide any generic feedback:
         
         {improvement_text}
         
@@ -753,19 +753,26 @@ def generate_enhanced_email_node(state) -> dict:
     email = f"Hi {mentor_name},\n\n"
     email += "Thank you for your recent mentorship session. Following our review, we are sharing key feedback to enhance your mentorship effectiveness.\n\n"
     
-    # Add refined strengths
-    email += "✅ What Went Well:\n"
-    for strength in refined_strengths[:3]:
-        if not strength.startswith('-'):
-            strength = f"- {strength}"
-        email += f"{strength}\n"
+    # Add refined strengths with proper formatting
+    email += "\n✅ STRENGTHS\n\n"
     
-    # Add refined improvements
-    email += "\n⚠️ Areas for Improvement:\n"
+    for i, strength in enumerate(refined_strengths[:3], 1):
+        # Remove any existing bullet points
+        strength = re.sub(r'^\s*[-•]\s*', '', str(strength)).strip()
+        email += f"• {strength}\n"
+    email += "\n"  # Add extra newline after strengths
+    
+    # Add refined improvements with numbered points and proper spacing
+    email += "\n1️⃣ KEY AREAS FOR IMPROVEMENT\n\n"
+    
     for i, improvement in enumerate(refined_improvements, 1):
-        if not any(improvement.startswith(prefix) for prefix in [f"{i}.", "-"]):
-            improvement = f"{i}. {improvement}"
-        email += f"{improvement}\n"
+        # Remove any existing numbering or bullet points
+        improvement = re.sub(r'^\s*[0-9]+\.?\s*', '', improvement)  # Remove numbers
+        improvement = re.sub(r'^\s*[-•]\s*', '', improvement)  # Remove bullets
+        improvement = improvement.strip()
+        
+        # Format as numbered point with proper spacing
+        email += f"{i}. {improvement}\n\n"  # Double newline for better spacing
     
     # Closing
     email += "\nPlease review these points and consider how you might address them in your upcoming sessions. We're here to support your growth as a mentor.\n\n"
