@@ -2,6 +2,8 @@ import os
 import tempfile
 import datetime
 import re
+import concurrent.futures
+from typing import List, Dict, Any, Tuple
 
 import streamlit as st
 from langgraph_review import process_transcript_enhanced
@@ -41,7 +43,7 @@ def save_uploaded_file(uploaded_file) -> str | None:
             tmp.write(uploaded_file.getvalue())
             return tmp.name
     except Exception as e:
-        st.error(f"Error saving file: {e}")
+        st.error(f"Error saving file {uploaded_file.name}: {e}")
         return None
 
 def extract_email_content(result: dict) -> str:
@@ -60,6 +62,18 @@ def extract_email_content(result: dict) -> str:
         return email_field
     return ""
 
+def process_single_file(transcript_path: str, guidelines_path: str, file_name: str) -> Tuple[bool, str, dict]:
+    """Process a single transcript file and return results."""
+    try:
+        result = process_transcript_enhanced(
+            transcript_path=transcript_path,
+            guidelines_path=guidelines_path
+        )
+        email_content = extract_email_content(result)
+        return True, file_name, {"email_content": email_content, "result": result}
+    except Exception as e:
+        return False, file_name, {"error": str(e)}
+
 def main():
     # "Create New" button resets the session for a fresh run
     if st.button("🆕 Create New", use_container_width=True):
@@ -67,7 +81,7 @@ def main():
         st.rerun()
 
     st.title("🎓 Mentor Review System")
-    st.markdown("Upload a mentorship session transcript in JSON format to generate a detailed review.")
+    st.markdown("Upload one or more mentorship session transcripts in JSON format to generate detailed reviews.")
 
     # Ensure guidelines PDF exists
     GUIDELINES_PATH = "Guidelines.pdf"
@@ -75,109 +89,159 @@ def main():
         with open(GUIDELINES_PATH, "w") as f:
             f.write("Standard mentorship guidelines for review process.")
 
-    # File uploader
-    uploaded_file = st.file_uploader(
-        "Choose a transcript JSON file",
+    # File uploader - now accepts multiple files
+    uploaded_files = st.file_uploader(
+        "Choose transcript JSON files",
         type=["json"],
-        help="Upload the transcript in JSON format"
+        help="Upload one or more transcript files in JSON format",
+        accept_multiple_files=True
     )
 
     # Step 1: After uploading, ask for date/time before processing
-    if uploaded_file and not st.session_state.get("ready_to_process"):
+    if uploaded_files and not st.session_state.get("ready_to_process"):
         now = datetime.datetime.now()
         date_str = st.text_input("Enter Date (YYYY-MM-DD)", now.strftime("%Y-%m-%d"))
         time_str = st.text_input("Enter Time (HH:MM:SS)", now.strftime("%H:%M:%S"))
-        if st.button("Continue", use_container_width=True):
-            tmp_path = save_uploaded_file(uploaded_file)
-            if not tmp_path:
+        if st.button("Process Files", use_container_width=True):
+            if not uploaded_files:
+                st.warning("Please upload at least one file.")
                 return
-            st.session_state["transcript_path"] = tmp_path
+                
+            file_paths = []
+            for file in uploaded_files:
+                tmp_path = save_uploaded_file(file)
+                if tmp_path:
+                    file_paths.append((tmp_path, file.name))
+            
+            if not file_paths:
+                st.error("Failed to save one or more files. Please try again.")
+                return
+                
+            st.session_state["file_paths"] = file_paths
             st.session_state["date_str"] = date_str
             st.session_state["time_str"] = time_str
-            st.session_state["file_name"] = uploaded_file.name
             st.session_state["ready_to_process"] = True
             st.rerun()
 
     # Step 2: Process and display
     if st.session_state.get("ready_to_process"):
-        transcript_path = st.session_state["transcript_path"]
+        file_paths = st.session_state.get("file_paths", [])
         date_str = st.session_state["date_str"]
         time_str = st.session_state["time_str"]
-        file_name = st.session_state["file_name"]
-
-        with st.spinner("Analyzing transcript and generating review..."):
-            try:
-                result = process_transcript_enhanced(
-                    transcript_path=transcript_path,
-                    guidelines_path=GUIDELINES_PATH
-                )
-            except Exception as e:
-                st.error(f"Processing failed: {e}")
-                return
-            finally:
-                # cleanup temporary file
+        
+        if not file_paths:
+            st.error("No valid files to process.")
+            st.session_state["ready_to_process"] = False
+            return
+            
+        results = {}
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Start the load operations and mark each future with its file name
+            future_to_file = {
+                executor.submit(process_single_file, path, GUIDELINES_PATH, name): (path, name)
+                for path, name in file_paths
+            }
+            
+            # Process results as they complete
+            for i, future in enumerate(concurrent.futures.as_completed(future_to_file)):
+                path, name = future_to_file[future]
                 try:
-                    os.remove(transcript_path)
-                except OSError:
-                    pass
-                st.session_state["transcript_path"] = None
-
-        # Extract the generated email content
-        email_content = extract_email_content(result)
-
-        # Extract overall score if present
-        overall_score = "N/A"
-        assessment = (result.get("assessment") or result.get("final_assessment") or {})
-        if isinstance(assessment, dict):
-            overall_score = str(assessment.get("overall_score", "N/A"))
-
-        # Extract mentor name for logging
-        mentor_name = "Mentor"
-        if email_content:
-            m = re.search(r"Hi ([^,]+),", email_content)
-            if m:
-                mentor_name = m.group(1).strip()
-
-        # Display feedback
-        st.markdown("---")
-        st.markdown(f"### 📝 Mentor Feedback")
-        st.markdown(f"**Overall Score:** {overall_score}")
-        st.markdown("---")
-
-        # Read-only text area for email
-        st.text_area(
-            label="Feedback E-mail",
-            value=email_content,
-            height=350,
-            disabled=True
-        )
-
-        st.download_button(
-            label="📥 Download Feedback",
-            data=email_content,
-            file_name="mentor_feedback.txt",
-            mime="text/plain",
-            use_container_width=True
-        )
-
-        # Optionally append to Google Sheet
-        if date_str and time_str and file_name:
+                    success, file_name, result = future.result()
+                    results[file_name] = result
+                    if success:
+                        status_text.text(f"Processed: {file_name}")
+                    else:
+                        status_text.text(f"Error processing {file_name}: {result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    status_text.text(f"Error processing {name}: {str(e)}")
+                    results[name] = {"error": str(e)}
+                
+                # Update progress
+                progress = (i + 1) / len(file_paths)
+                progress_bar.progress(min(progress, 1.0))
+        
+        # Clean up temporary files
+        for path, _ in file_paths:
             try:
-                from gsheet_utils import append_feedback_row
-                append_feedback_row(
-                    date_str, time_str, file_name,
-                    mentor_name, overall_score, email_content,
-                    creds_path="GS_creds.json",
-                    spreadsheet_id="1hIH41rTkaiuIWND0mbXgCtMBQBfL27KRuGaCif5dxYg"
+                os.remove(path)
+            except OSError:
+                pass
+        
+        # Display results
+        st.success(f"Processed {len([r for r in results.values() if 'error' not in r])}/{len(results)} files successfully!")
+        
+        # Show each result in an expander
+        for file_name, result in results.items():
+            with st.expander(f"Results for: {file_name}", expanded=True):
+                if "error" in result:
+                    st.error(f"Error processing {file_name}: {result['error']}")
+                    continue
+                    
+                email_content = result.get("email_content", "")
+                full_result = result.get("result", {})
+                
+                # Extract overall score if present
+                overall_score = "N/A"
+                assessment = (full_result.get("assessment") or full_result.get("final_assessment") or {})
+                if isinstance(assessment, dict):
+                    overall_score = str(assessment.get("overall_score", "N/A"))
+                
+                # Extract mentor name for logging
+                mentor_name = "Mentor"
+                if email_content:
+                    m = re.search(r"Hi ([^,]+),", email_content)
+                    if m:
+                        mentor_name = m.group(1).strip()
+                
+                st.markdown(f"### 📝 {file_name}")
+                st.markdown(f"**Overall Score:** {overall_score}")
+                
+                # Read-only text area for email
+                st.text_area(
+                    label=f"Feedback for {file_name}",
+                    value=email_content,
+                    height=200,
+                    key=f"email_{file_name}",
+                    disabled=True
                 )
-                st.success("Saved to Google Sheet!")
-            except Exception as e:
-                st.warning(f"Could not save to Google Sheet: {e}")
-        else:
-            st.warning("Missing date, time, or filename. Not saved to Google Sheet.")
-
+                
+                # Download button for individual feedback
+                st.download_button(
+                    label=f"📥 Download {file_name} Feedback",
+                    data=email_content,
+                    file_name=f"{os.path.splitext(file_name)[0]}_feedback.txt",
+                    mime="text/plain",
+                    key=f"dl_{file_name}",
+                    use_container_width=True
+                )
+                
+                # Save to Google Sheets
+                try:
+                    from gsheet_utils import append_feedback_row
+                    success, message = append_feedback_row(
+                        date_str=date_str,
+                        time_str=time_str,
+                        filename=file_name,
+                        mentor_name=mentor_name,
+                        overall_score=overall_score,
+                        email_output=email_content,
+                        # creds_path and spreadsheet_id will use defaults from gsheet_utils.py
+                    )
+                    if success:
+                        st.success(f"Saved to Google Sheets: {message}")
+                    else:
+                        st.warning(f"Google Sheets: {message}")
+                except Exception as e:
+                    st.warning(f"Error saving to Google Sheet: {str(e)}")
+                
+                st.markdown("---")
+        
         # Reset to allow next run
         st.session_state["ready_to_process"] = False
+        st.session_state["file_paths"] = []
 
 if __name__ == "__main__":
     main()
