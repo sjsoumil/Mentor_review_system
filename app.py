@@ -3,10 +3,10 @@ import tempfile
 import datetime
 import re
 import concurrent.futures
-from typing import List, Dict, Any, Tuple
+from typing import Tuple
 
 import streamlit as st
-from langgraph_review import process_transcript_enhanced
+from review_system_3 import process_transcript_enhanced
 
 # Load environment variables from Streamlit secrets
 try:
@@ -31,7 +31,7 @@ except Exception as e:
 
 # Streamlit page configuration
 st.set_page_config(
-    page_title="Mentor Review System",
+    page_title="Mentor Review System (v2)",
     page_icon="📝",
     layout="centered"
 )
@@ -48,19 +48,36 @@ def save_uploaded_file(uploaded_file) -> str | None:
 
 def extract_email_content(result: dict) -> str:
     """
-    Given the output of process_transcript_enhanced, return the generated
+    Given the output of review_system_3.process_transcript_enhanced, return the generated
     email string (or empty if not found).
     """
-    # Prefer the nested "email_content" key
-    if isinstance(result.get("email_content"), dict):
-        return result["email_content"].get("email", "")
-    # Fallback to top-level "email"
-    email_field = result.get("email")
-    if isinstance(email_field, dict):
-        return email_field.get("email", "")
+    # review_system_3.py returns 'feedback_email'
+    email_field = result.get("feedback_email")
     if isinstance(email_field, str):
         return email_field
+    # Fallbacks (in case the interface changes)
+    if isinstance(result.get("email_content"), dict):
+        return result["email_content"].get("email", "")
+    if isinstance(result.get("email"), dict):
+        return result["email"].get("email", "")
+    if isinstance(result.get("email"), str):
+        return result["email"]
     return ""
+
+def extract_overall_score(result: dict) -> str:
+    """
+    Extract overall score consistently for review_system_3 output.
+    """
+    # Direct key if present
+    score = result.get("overall_score")
+    if isinstance(score, (int, float)):
+        return str(score)
+    # Nested inside overall_guideline_assessment
+    oga = result.get("overall_guideline_assessment") or {}
+    score = oga.get("overall_score")
+    if isinstance(score, (int, float)):
+        return str(score)
+    return "N/A"
 
 def process_single_file(transcript_path: str, guidelines_path: str, file_name: str) -> Tuple[bool, str, dict]:
     """Process a single transcript file and return results."""
@@ -70,7 +87,8 @@ def process_single_file(transcript_path: str, guidelines_path: str, file_name: s
             guidelines_path=guidelines_path
         )
         email_content = extract_email_content(result)
-        return True, file_name, {"email_content": email_content, "result": result}
+        overall_score = extract_overall_score(result)
+        return True, file_name, {"email_content": email_content, "overall_score": overall_score, "result": result}
     except Exception as e:
         return False, file_name, {"error": str(e)}
 
@@ -80,8 +98,8 @@ def main():
         st.session_state.clear()
         st.rerun()
 
-    st.title("🎓 Mentor Review System")
-    st.markdown("Upload one or more mentorship session transcripts in JSON format to generate detailed reviews.")
+    st.title("🎓 Mentor Review System — Review Engine v2")
+    st.markdown("Upload one or more mentorship session transcripts in JSON format to generate detailed reviews (using `review_system_3.py`).")
 
     # Ensure guidelines PDF exists
     GUIDELINES_PATH = "Guidelines.pdf"
@@ -181,13 +199,8 @@ def main():
                     continue
                     
                 email_content = result.get("email_content", "")
+                overall_score = result.get("overall_score", "N/A")
                 full_result = result.get("result", {})
-                
-                # Extract overall score if present
-                overall_score = "N/A"
-                assessment = (full_result.get("assessment") or full_result.get("final_assessment") or {})
-                if isinstance(assessment, dict):
-                    overall_score = str(assessment.get("overall_score", "N/A"))
                 
                 # Extract mentor name for logging
                 mentor_name = "Mentor"
@@ -226,9 +239,8 @@ def main():
                         time_str=time_str,
                         filename=file_name,
                         mentor_name=mentor_name,
-                        overall_score=overall_score,
+                        overall_score=str(overall_score),
                         email_output=email_content,
-                        # creds_path and spreadsheet_id will use defaults from gsheet_utils.py
                     )
                     if success:
                         st.success(f"Saved to Google Sheets: {message}")
