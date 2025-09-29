@@ -17,14 +17,19 @@ except ImportError:
     st = None
 
 # Initialize OpenAI API key
+print("Environment variables:", os.environ)
 openai_key = os.getenv("OPENAI_API_KEY")
+print(f"OpenAI API key from env: {'Found' if openai_key else 'Not found'}")
+
 if not openai_key and st:
     try:
+        print("Checking Streamlit secrets...")
         if 'openai' in st.secrets and 'api_key' in st.secrets.openai:
             openai_key = st.secrets.openai.api_key
             os.environ["OPENAI_API_KEY"] = openai_key
-    except Exception:
-        pass
+            print("Found API key in Streamlit secrets")
+    except Exception as e:
+        print(f"Error accessing Streamlit secrets: {e}")
 
 if not openai_key:
     raise EnvironmentError(
