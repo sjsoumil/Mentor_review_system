@@ -6,7 +6,16 @@ from typing import List, Dict, Any, Optional
 
 # If you want to use a specific sheet, set this here or pass as arg
 SPREADSHEET_ID = "1hIH41rTkaiuIWND0mbXgCtMBQBfL27KRuGaCif5dxYg"
-SHEET_HEADER = ["Date", "Time", "Filename", "Mentor Name", "Overall Score", "Email Output"]
+SHEET_HEADER = [
+    "Date", 
+    "Time", 
+    "Filename", 
+    "Mentor Name", 
+    "Overall Score", 
+    "Email Output",
+    "Overall Summary",
+    "Checklist Summary"
+]
 
 def get_gsheet_client(creds_path: Optional[str] = None):
     scopes = [
@@ -53,13 +62,34 @@ def get_or_create_sheet_by_id(gc, spreadsheet_id: str = SPREADSHEET_ID):
 
 
 def append_feedback_row(
-    date_str: str, time_str: str, filename: str, mentor_name: str, overall_score: str, email_output: str,
-    creds_path: Optional[str] = None, spreadsheet_id: str = SPREADSHEET_ID
+    date_str: str,
+    time_str: str,
+    filename: str,
+    mentor_name: str,
+    overall_score: str,
+    email_output: str,
+    overall_summary: str = "",
+    checklist_summary: str = "",
+    creds_path: Optional[str] = None,
+    spreadsheet_id: str = SPREADSHEET_ID
 ):
     try:
         gc = get_gsheet_client(creds_path)
         worksheet = get_or_create_sheet_by_id(gc, spreadsheet_id)
-        worksheet.append_row([date_str, time_str, filename, mentor_name, overall_score, email_output])
+        
+        # Prepare the row data with all fields
+        row_data = [
+            date_str,
+            time_str,
+            filename,
+            mentor_name,
+            overall_score,
+            email_output,
+            overall_summary,
+            checklist_summary
+        ]
+        
+        worksheet.append_row(row_data)
         return True, "Successfully saved to Google Sheet"
     except Exception as e:
         error_msg = f"Could not save to Google Sheet: {str(e)}"
