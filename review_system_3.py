@@ -57,6 +57,8 @@ ANALYSIS_PROMPT_TEMPLATE = """
 You are an expert reviewer. Your ONLY job is to check if the mentor followed the official Analytics Vidhya mentorship guidelines.
 Never judge technical/subject knowledge. ONLY comment on adherence to guidelines, professionalism, session structure, and communication.
 
+CRITICAL: Score ONLY based on guideline adherence. Do NOT score based on technical knowledge, subject expertise, or correctness of answers.
+
 CONVERSATION METRICS:
 {metrics}
 
@@ -71,25 +73,106 @@ Please fill the following JSON object (skip technical points):
 {{
   "summary": "One sentence on mentor's compliance to guidelines.",
   "positive_guideline_behaviors": [
-    {{"guideline": "Which point was followed", "example": "Example phrase or behavior"}}
+    {{"guideline": "Which guideline point was followed", "example": "Example phrase or behavior"}}
   ],
   "guideline_violations": [
     {{
       "guideline": "Which guideline was NOT followed",
       "severity": <int 1-10>,
       "evidence": "Exact phrase/example from chunk",
-      "impact": "Why this matters for mentorship quality"
+      "impact": "Why this matters for guideline compliance"
     }}
   ],
   "improvement_suggestions": [
     {{
-      "title": "[Specific area for improvement]",
-      "suggestion": "[Actionable recommendation phrased as constructive feedback. Use second person 'you' and be specific about what to improve and how. For example: 'Consider pausing after asking questions to give students more time to respond. A 3-5 second wait time can encourage more thoughtful responses.' Keep it professional and supportive.]"
+      "title": "[Specific guideline area for improvement]",
+      "suggestion": "[Actionable recommendation on following guidelines better. Use second person 'you' and be specific. Keep it professional and supportive.]"
     }}
   ],
-  "professionalism": <int 1-10>,
-  "session_flow": <int 1-10>,
-  "overall_guideline_compliance": <int 1-10>
+  "guideline_professionalism_score": <int 1-10, based ONLY on following professionalism guidelines>,
+  "guideline_session_flow_score": <int 1-10, based ONLY on following session structure guidelines>,
+  "overall_guideline_compliance": <int 1-10, based ONLY on overall adherence to all guidelines>
+}}
+"""
+
+# New prompt template for overall session summary
+SESSION_SUMMARY_PROMPT = """
+You are an expert analyst reviewing a mentorship session transcript. Provide a comprehensive overview of the entire session.
+
+FULL TRANSCRIPT:
+{transcript}
+
+Please provide a detailed summary that covers:
+1. Main topics discussed during the session
+2. Key learning outcomes for the student
+3. Overall quality and effectiveness of the mentorship
+4. Student's engagement and participation level
+5. Mentor's teaching approach and methodology
+
+Write a cohesive paragraph (150-250 words) that captures the essence of this mentorship session.
+"""
+
+# New prompt template for session checklist
+SESSION_CHECKLIST_PROMPT = """
+You are an expert reviewer analyzing a mentorship session transcript. Answer the following questions based on evidence from the transcript.
+
+FULL TRANSCRIPT:
+{transcript}
+
+For each question, provide:
+1. A clear YES or NO answer
+2. A brief explanation (3-4 sentences) with specific evidence from the transcript
+
+Return your response as a JSON object with this exact structure:
+
+{{
+  "checklist": [
+    {{
+      "question": "Did mentor have camera feed with Virtual Background or Blur background?",
+      "answer": "YES/NO",
+      "explanation": "Brief explanation with evidence"
+    }},
+    {{
+      "question": "Was there any network issues or background noise?",
+      "answer": "YES/NO",
+      "explanation": "Brief explanation with evidence"
+    }},
+    {{
+      "question": "Did mentor login on Time?",
+      "answer": "YES/NO/UNCLEAR",
+      "explanation": "Brief explanation with evidence"
+    }},
+    {{
+      "question": "Did mentor look like he/she knows the student's profile or have asked the same from student?",
+      "answer": "YES/NO",
+      "explanation": "Brief explanation with evidence"
+    }},
+    {{
+      "question": "Did mentor ask students what Challenges they are facing currently?",
+      "answer": "YES/NO",
+      "explanation": "Brief explanation with evidence"
+    }},
+    {{
+      "question": "Identify the specific issue/concern by discussing with student (If Technical Session)",
+      "answer": "YES/NO/N/A",
+      "explanation": "Brief explanation with evidence"
+    }},
+    {{
+      "question": "Commitment taken from student (On their learning time, weekly review of their own progress)",
+      "answer": "YES/NO",
+      "explanation": "Brief explanation with evidence"
+    }},
+    {{
+      "question": "Did the mentor summarize the session, set expectations, and take clear commitments from the student on specific milestones?",
+      "answer": "YES/NO",
+      "explanation": "Brief explanation with evidence"
+    }},
+    {{
+      "question": "Did mentor said anything negative about AV or its courses / Has mentor shared some personal details?",
+      "answer": "YES/NO",
+      "explanation": "Brief explanation with evidence"
+    }}
+  ]
 }}
 """
 
@@ -246,8 +329,8 @@ def analyze_single_chunk(args: Tuple[int, str, str, dict]) -> Optional[dict]:
                     "title": "Review Error",
                     "suggestion": "Automated review failed for this segment."
                 }],
-                "professionalism": 5,
-                "session_flow": 5,
+                "guideline_professionalism_score": 5,
+                "guideline_session_flow_score": 5,
                 "overall_guideline_compliance": 5
             }
         }
@@ -286,63 +369,39 @@ def deep_analyze_chunks(chunks: List[str], guidelines: str, conversation_metrics
 
 
 def aggregate_guideline_assessment(chunk_analyses):
-    """Aggregate scores and feedback from chunk analyses using a discriminative rubric
-    and apply a gentle calibration so typical sessions land near 75/100 on average.
+    """Aggregate scores and feedback from chunk analyses based ONLY on guideline adherence.
+    Scoring focuses exclusively on how well the mentor followed the official guidelines,
+    not on technical knowledge or subject expertise.
     """
     import statistics
 
-    # Trackers
-    clarity_scores, relevance_scores, engagement_scores = [], [], []
-    practical_scores, understanding_scores = [], []
-    overall_quality_scores, professionalism_scores, session_flow_scores = [], [], []
+    # Trackers for guideline-specific scores
+    professionalism_scores, session_flow_scores, compliance_scores = [], [], []
     all_positive_behaviors, all_violations, all_improvements = [], [], []
-    all_issues, all_missed_opportunities = [], []
-    all_learning_outcomes, all_mentor_adaptations, all_conversation_flows = [], [], []
 
     for ca in (chunk_analyses or []):
         analysis = (ca or {}).get("analysis", {})
 
-        perf = analysis.get("mentor_performance", {})
-        if isinstance(perf, dict):
-            for key, bucket in [
-                ("clarity_score", clarity_scores),
-                ("relevance_score", relevance_scores),
-                ("engagement_score", engagement_scores),
-                ("practical_value_score", practical_scores),
-                ("student_understanding_score", understanding_scores),
-            ]:
-                v = perf.get(key)
-                if isinstance(v, (int, float)):
-                    bucket.append(float(v))
+        # Extract guideline-based scores only
+        prof_score = analysis.get("guideline_professionalism_score")
+        flow_score = analysis.get("guideline_session_flow_score")
+        compliance_score = analysis.get("overall_guideline_compliance")
+        
+        if isinstance(prof_score, (int, float)):
+            professionalism_scores.append(float(prof_score))
+        if isinstance(flow_score, (int, float)):
+            session_flow_scores.append(float(flow_score))
+        if isinstance(compliance_score, (int, float)):
+            compliance_scores.append(float(compliance_score))
 
-        student = analysis.get("student_experience", {})
-        if isinstance(student, dict):
-            v1 = student.get("satisfaction_level")
-            v2 = student.get("engagement_level")
-            if isinstance(v1, (int, float)): professionalism_scores.append(float(v1))
-            if isinstance(v2, (int, float)): session_flow_scores.append(float(v2))
-
-        oq = analysis.get("overall_chunk_quality")
-        if isinstance(oq, (int, float)):
-            overall_quality_scores.append(float(oq))
-
-        all_positive_behaviors.extend(analysis.get("positive_aspects", []) or [])
+        all_positive_behaviors.extend(analysis.get("positive_guideline_behaviors", []) or [])
         all_violations.extend(analysis.get("guideline_violations", []) or [])
-        all_issues.extend(analysis.get("specific_issues", []) or [])
+        
         for imp in analysis.get("improvement_suggestions", []) or []:
             if isinstance(imp, str):
                 imp = {"title": imp, "suggestion": imp}
             if imp and imp not in all_improvements:
                 all_improvements.append(imp)
-
-        if "missed_opportunities" in analysis:
-            all_missed_opportunities.extend(analysis.get("missed_opportunities") or [])
-        if "learning_outcome" in analysis:
-            all_learning_outcomes.append(analysis["learning_outcome"])
-        if "mentor_adaptation" in analysis:
-            all_mentor_adaptations.append(analysis["mentor_adaptation"])
-        if "conversation_flow" in analysis:
-            all_conversation_flows.append(analysis["conversation_flow"])
 
     n_chunks = max(1, len(chunk_analyses or []))
 
@@ -352,98 +411,104 @@ def aggregate_guideline_assessment(chunk_analyses):
         except Exception:
             return float(default)
 
-    severe_issues = [i for i in all_issues if _sev(i) >= 8]
-    moderate_issues = [i for i in all_issues if 5 <= _sev(i) < 8]
+    # Calculate violation impact
+    severe_violations = [v for v in all_violations if _sev(v) >= 8]
+    moderate_violations = [v for v in all_violations if 5 <= _sev(v) < 8]
+    minor_violations = [v for v in all_violations if _sev(v) < 5]
 
-    # Normalize counts by chunks
+    # Normalize by chunks
     pos_rate = len(all_positive_behaviors) / n_chunks
-    sev_rate = len(severe_issues) / n_chunks
-    mod_rate = len(moderate_issues) / n_chunks
-    vio_rate = len(all_violations) / n_chunks
+    sev_rate = len(severe_violations) / n_chunks
+    mod_rate = len(moderate_violations) / n_chunks
+    minor_rate = len(minor_violations) / n_chunks
 
-    # Heuristic metric if missing/flat
-    def _heuristic():
-        # Tilted towards positive (baseline 6.8) so average centers closer to 7.5 after calibration
-        base = 6.8 + 0.7 * pos_rate - 0.7 * sev_rate - 0.4 * mod_rate - 0.2 * vio_rate
+    # Heuristic based on guideline adherence
+    def _guideline_heuristic():
+        # Base score starts at 7.0 (neutral guideline following)
+        base = 7.0
+        # Reward positive guideline behaviors
+        base += min(2.0, 0.8 * pos_rate)
+        # Penalize violations based on severity
+        base -= min(3.0, 1.2 * sev_rate + 0.6 * mod_rate + 0.2 * minor_rate)
         return max(1.0, min(10.0, base))
 
     def _robust_mean(scores):
         if not scores:
-            return _heuristic()
+            return _guideline_heuristic()
         m = statistics.mean(scores)
         sd = statistics.pstdev(scores) if len(scores) > 1 else 0.0
-        # Replace flat near-5 with heuristic
+        # If all scores are flat/default, use heuristic instead
         if abs(m - 5.0) < 0.2 and sd < 0.2:
-            return _heuristic()
+            return _guideline_heuristic()
         return max(1.0, min(10.0, m))
 
-    avg_scores = {
-        "clarity": _robust_mean(clarity_scores),
-        "relevance": _robust_mean(relevance_scores),
-        "engagement": _robust_mean(engagement_scores),
-        "practical_value": _robust_mean(practical_scores),
-        "student_understanding": _robust_mean(understanding_scores),
-        "overall_quality": _robust_mean(overall_quality_scores),
-        "professionalism": _robust_mean(professionalism_scores),
-        "session_flow": _robust_mean(session_flow_scores),
-    }
+    # Calculate average scores for each guideline dimension
+    avg_professionalism = _robust_mean(professionalism_scores)
+    avg_session_flow = _robust_mean(session_flow_scores)
+    avg_compliance = _robust_mean(compliance_scores)
 
+    # Weighted score based purely on guideline adherence
+    # Equal weight to all guideline aspects
     weights = {
-        "clarity": 0.15,
-        "relevance": 0.15,
-        "engagement": 0.15,
-        "practical_value": 0.15,
-        "student_understanding": 0.10,
-        "professionalism": 0.10,
-        "session_flow": 0.10,
-        "overall_quality": 0.10,
+        "professionalism": 0.35,
+        "session_flow": 0.35,
+        "compliance": 0.30,
     }
 
-    base_score = sum(avg_scores[k] * w for k, w in weights.items())  # 1-10
+    base_score = (
+        avg_professionalism * weights["professionalism"] +
+        avg_session_flow * weights["session_flow"] +
+        avg_compliance * weights["compliance"]
+    )
 
-    # Penalty/bonus (gentler penalty, slightly stronger bonus)
-    sev_mean = statistics.mean([_sev(i) for i in all_issues]) if all_issues else 0.0
-    penalty = min(2.0, 0.6 * sev_rate + 0.3 * mod_rate + 0.05 * (sev_mean / 10.0))
-    bonus = min(2.5, 0.6 * pos_rate)
+    # Apply violation penalties
+    violation_penalty = 0
+    if severe_violations:
+        violation_penalty += min(2.0, 0.8 * sev_rate)
+    if moderate_violations:
+        violation_penalty += min(1.5, 0.5 * mod_rate)
+    if minor_violations:
+        violation_penalty += min(0.8, 0.2 * minor_rate)
 
-    # Consistency credit
-    try:
-        core = [avg_scores["clarity"], avg_scores["relevance"], avg_scores["engagement"], avg_scores["practical_value"]]
-        consistency = statistics.pstdev(core)
-        if statistics.mean(core) >= 7.5 and consistency < 0.6:
-            bonus += 0.4
-    except Exception:
-        pass
+    # Apply positive behavior bonus
+    positive_bonus = min(1.5, 0.6 * pos_rate)
 
-    raw = base_score + bonus - penalty  # 1-10 approx
+    # Calculate final score (1-10 scale)
+    raw_score = base_score + positive_bonus - violation_penalty
+    raw_score = max(1.0, min(10.0, raw_score))
 
-    # --- Calibration to average ≈ 7.5 (75/100) ---
-    # Assume a 'neutral' session raw ~= 6.8; scale changes slightly to spread
-    neutral_point = 6.8
-    scale = 1.1
-    calibrated = 7.5 + (raw - neutral_point) * scale
-    final_0_10 = max(1.0, min(10.0, calibrated))
+    # Calibration: Center around 7.5 for sessions with reasonable guideline adherence
+    neutral_point = 7.0
+    scale = 1.05
+    calibrated = 7.5 + (raw_score - neutral_point) * scale
+    final_score = max(1.0, min(10.0, calibrated))
 
-    scaled_score = round(final_0_10 * 10.0, 1)  # 0-100
+    # Convert to 70-100 scale (previously 0-100)
+    scaled_score = round(70 + (final_score * 3.0), 1)  # Maps 0-10 to 70-100
+    scaled_score = max(70.0, min(100.0, scaled_score))  # Ensure within 70-100 range
 
-    summary = ""
-    if all_learning_outcomes:
-        summary = ". ".join([s for s in all_learning_outcomes if s])
+    # Scale detailed scores to 70-100 as well
+    def scale_detail_score(score):
+        return round(70 + (score * 3.0), 1)
 
     return {
         "overall_score": scaled_score,
-        "detailed_scores": {k: round(v, 1) for k, v in avg_scores.items()},
-        "professionalism": round(avg_scores["professionalism"], 1),
-        "session_flow": round(avg_scores["session_flow"], 1),
-        "overall_guideline_compliance": round(avg_scores["overall_quality"], 1),
+        "detailed_scores": {
+            "guideline_professionalism": scale_detail_score(avg_professionalism),
+            "guideline_session_flow": scale_detail_score(avg_session_flow),
+            "guideline_compliance": scale_detail_score(avg_compliance),
+        },
+        "professionalism": scale_detail_score(avg_professionalism),
+        "session_flow": scale_detail_score(avg_session_flow),
+        "overall_guideline_compliance": scale_detail_score(avg_compliance),
         "positive_behaviors": all_positive_behaviors,
         "violations": all_violations,
         "improvements": all_improvements,
-        "issues": all_issues,
-        "missed_opportunities": all_missed_opportunities,
-        "summaries": [s for s in [summary] if s],
-        "mentor_adaptations": all_mentor_adaptations,
-        "conversation_flows": all_conversation_flows,
+        "violation_summary": {
+            "severe": len(severe_violations),
+            "moderate": len(moderate_violations),
+            "minor": len(minor_violations)
+        }
     }
 
 def extract_mentor_name(transcript_data, transcript_text):
@@ -501,7 +566,113 @@ def guideline_feedback_email(mentor_name, assessment):
     return email
 
 
-@lru_cache(maxsize=32)
+def generate_overall_summary(transcript_text: str) -> str:
+    """Generate an overall session summary using LLM."""
+    try:
+        # Truncate transcript if too long (keep first 8000 chars for context)
+        truncated_transcript = transcript_text[:8000] if len(transcript_text) > 8000 else transcript_text
+        
+        prompt = SESSION_SUMMARY_PROMPT.format(transcript=truncated_transcript)
+        response = llm.invoke(prompt)
+        summary = response.content if hasattr(response, 'content') else str(response)
+        
+        return summary.strip()
+    except Exception as e:
+        print(f"Error generating overall summary: {e}")
+        return "Unable to generate overall summary due to an error."
+
+
+def generate_session_checklist(transcript_text: str) -> dict:
+    """Generate session checklist answers using LLM."""
+    try:
+        # Truncate transcript if too long
+        truncated_transcript = transcript_text[:10000] if len(transcript_text) > 10000 else transcript_text
+        
+        prompt = SESSION_CHECKLIST_PROMPT.format(transcript=truncated_transcript)
+        response = llm.invoke(prompt)
+        response_text = response.content if hasattr(response, 'content') else str(response)
+        
+        # Extract JSON from response
+        json_text = extract_json_from_text(response_text)
+        checklist_data = json.loads(json_text)
+        
+        return checklist_data
+    except Exception as e:
+        print(f"Error generating session checklist: {e}")
+        # Return default structure if error occurs
+        return {
+            "checklist": [
+                {
+                    "question": q,
+                    "answer": "UNCLEAR",
+                    "explanation": "Unable to analyze due to an error."
+                }
+                for q in [
+                    "Did mentor have camera feed with Virtual Background or Blur background?",
+                    "Was there any network issues or background noise?",
+                    "Did mentor login on Time?",
+                    "Did mentor look like he/she knows the student's profile or have asked the same from student?",
+                    "Did mentor ask students what Challenges they are facing currently?",
+                    "Identify the specific issue/concern by discussing with student (If Technical Session)",
+                    "Commitment taken from student (On their learning time, weekly review of their own progress)",
+                    "Did the mentor summarize the session, set expectations, and take clear commitments from the student on specific milestones?",
+                    "Did mentor said anything negative about AV or its courses / Has mentor shared some personal details?"
+                ]
+            ]
+        }
+
+
+def format_checklist_output(checklist_data: dict) -> tuple:
+    """Format checklist data into a readable string with scoring.
+    
+    Returns:
+        tuple: (formatted_output, score_percentage)
+        
+    Scoring:
+    - YES = 10 points
+    - NO/UNCLEAR = 0 points
+    - N/A (for technical question) = 10 points
+    """
+    output = "\n==== SESSION CHECKLIST ====\n\n"
+    total_score = 0
+    total_possible = 0
+    
+    for item in checklist_data.get("checklist", []):
+        question = item.get("question", "")
+        answer = item.get("answer", "UNCLEAR")
+        explanation = item.get("explanation", "")
+        
+        # Default score calculation
+        answer_upper = answer.upper()
+        
+        # Special case: For negative about AV question, NO is good (10 points)
+        if "negative about AV" in question.lower() or "personal details" in question.lower():
+            item_score = 10 if answer_upper == "NO" else 0
+        # Special case: Login with UNCLEAR is 0 points
+        elif "login" in question.lower() and answer_upper == "UNCLEAR":
+            item_score = 0
+        # Special case: N/A for technical questions is 10 points
+        elif "technical" in question.lower() and answer_upper == "N/A":
+            item_score = 10
+        # Default case: YES is 10 points, anything else is 0
+        else:
+            item_score = 10 if answer_upper == "YES" else 0
+        
+        total_score += item_score
+        total_possible += 10  # Each question is worth 10 points
+        
+        output += f"❓ {question}\n"
+        output += f"📋 Answer: {answer}\n"
+        output += f"💡 {explanation}\n"
+        output += f"⭐ Score: {item_score}/10\n\n"
+    
+    # Calculate the score percentage
+    score_percentage = (total_score / total_possible * 100) if total_possible > 0 else 0
+    output += f"\n📊 CHECKLIST SCORE: {int(score_percentage)}% ({total_score}/{total_possible} points)\n"
+    
+    return output + "\n" + "="*50 + "\n", score_percentage
+
+
 def process_transcript_enhanced(transcript_path: str, guidelines_path: str = "Guidelines.pdf") -> dict:
     with open(transcript_path, "r") as f:
         transcript_data = json.load(f)
@@ -509,6 +680,7 @@ def process_transcript_enhanced(transcript_path: str, guidelines_path: str = "Gu
         transcript_text = "\n".join(f"{item.get('speaker_name', 'Unknown')}: {item.get('sentence', '')}" for item in transcript_data)
     else:
         transcript_text = transcript_data.get('text', str(transcript_data))
+    
     guidelines = extract_pdf_text(guidelines_path)
     chunks = chunk_text_intelligently(transcript_text)
     conversation_metrics = analyze_conversation_metrics(transcript_text)
@@ -516,24 +688,83 @@ def process_transcript_enhanced(transcript_path: str, guidelines_path: str = "Gu
     assessment = aggregate_guideline_assessment(chunk_analyses)
     mentor_name = extract_mentor_name(transcript_data, transcript_text)
     email_content = guideline_feedback_email(mentor_name, assessment)
+    
+    # Generate overall session summary using LLM
+    print("\nGenerating overall session summary...")
+    overall_summary = generate_overall_summary(transcript_text)
+    
+    # Generate session checklist using LLM
+    print("Generating session checklist...")
+    session_checklist = generate_session_checklist(transcript_text)
+    
+    # Format checklist for display and get the score
+    checklist_output, checklist_score = format_checklist_output(session_checklist)
+    
+    # Ensure scores are in 0-100 range
+    assessment_score = assessment.get("overall_score", 0)
+    if isinstance(assessment_score, str) and assessment_score.replace('.', '').isdigit():
+        assessment_score = float(assessment_score)
+    elif not isinstance(assessment_score, (int, float)):
+        assessment_score = 0
+    assessment_score = max(0, min(100, assessment_score))
+    checklist_score = max(0, min(100, checklist_score))
+    
+    # Calculate base score (70% assessment, 30% checklist)
+    base_score = (assessment_score * 0.7) + (checklist_score * 0.3)
+    
+    # Apply checklist-based score ranges
+    if checklist_score <= 40:
+        # Scale base score to 70-80 range
+        combined_score = 70 + (base_score / 100 * 10)
+    elif 40 < checklist_score <= 60:
+        # Scale base score to 80-85 range
+        combined_score = 80 + (base_score / 100 * 5)
+    else:
+        # Scale base score to 85-95 range
+        combined_score = 85 + (base_score / 100 * 10)
+    
+    # Ensure final score is within the target range
+    if checklist_score <= 40:
+        combined_score = max(70, min(80, combined_score))
+    elif 40 < checklist_score <= 60:
+        combined_score = max(80, min(85, combined_score))
+    else:
+        combined_score = max(85, min(95, combined_score))
+    
     output = {
         "success": True,
+        "overall_session_summary": overall_summary,
+        "session_checklist": session_checklist,
         "overall_guideline_assessment": assessment,
         "feedback_email": email_content,
         "timestamp": datetime.datetime.now().isoformat(),
-        "overall_score": assessment.get("overall_score", "N/A"),
+        "scores": {
+            "assessment_score": round(assessment_score, 1),
+            "checklist_score": round(checklist_score, 1),
+            "overall_score": round(combined_score, 1)
+        },
+        "overall_score": round(combined_score, 1),
         "assessment_summary": {
             "professionalism": assessment.get("professionalism", "N/A"),
             "session_flow": assessment.get("session_flow", "N/A"),
             "guideline_compliance": assessment.get("overall_guideline_compliance", "N/A")
         }
     }
+    
     output_path = transcript_path.replace('.json','_guideline_review.json')
     with open(output_path, 'w') as f:
         json.dump(output, f, indent=2)
+    
     print("Review Output saved at:", output_path)
+    print("\n==== OVERALL SESSION SUMMARY ====\n")
+    print(overall_summary)
+    print("\n" + "="*50)
+    print(checklist_output)
+    print("="*50)
     print("\n==== EMAIL ====\n")
     print(email_content)
+    print("\n" + "="*50 + "\n")
+    
     return output
 
 
